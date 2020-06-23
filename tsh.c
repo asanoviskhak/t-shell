@@ -1,7 +1,7 @@
 /* 
  * tsh - A tiny shell program with job control
  * 
- * <Put your name and login ID here>
+ * <Iskhak Asanov 20172007>
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -166,6 +166,37 @@ int main(int argc, char **argv)
 void eval(char *cmdline) 
 {
     // TODO: Implement this function.
+    pid_t pid;
+    char *argv[MAXARGS];
+    int ps = parseline(cmdline, argv), bc = builtin_cmd(argv);
+    sigset_t block;
+    if (!bc){
+        sigemptyset(&block);
+        sigaddset(&block, SIGCHLD);
+        sigprocmask(SIG_BLOCK, &block, NULL);
+        if ((pid = fork()) < 0){
+            fprintf(stderr, "Error while forking!\n");
+            return;
+        }
+        else if (!pid){
+            setpgid(0,0);
+            sigprocmask(SIG_UNBLOCK, &block, NULL);
+            if (execvp(argv[0], argv) < 0){
+                fprintf(stderr,"Command '%s' not found or wrong command! Try to change it.\n", argv[0]);
+                exit(1);
+            }
+        }
+        else{
+            if (!ps){ addjob(jobs, pid, FG, cmdline); }
+            if (ps){ 
+                addjob(jobs, pid, BG, cmdline); 
+                printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
+            }
+            sigprocmask(SIG_UNBLOCK, &block, NULL);
+            if (!bc){ waitfg(pid); }
+            else printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
+        }
+    } 
     return;
 }
 
@@ -233,15 +264,76 @@ int parseline(const char *cmdline, char **argv)
 int builtin_cmd(char **argv) 
 {
     // TODO: Implement this function.
+    if (strcmp(argv[0], "quit") == 0){
+        int i=0;
+        while(i<MAXJOBS){
+            if (jobs[i].state == BG){ waitfg(jobs[i].pid); } i++;
+        }
+        exit(0);
+    }
+    if (strcmp(argv[0], "jobs") == 0){
+        listjobs(jobs);
+        return 1;
+    }
+    if (strcmp(argv[0], "bg") == 0 || strcmp(argv[0], "fg") == 0){
+        do_bgfg(argv);
+        return 1;
+    }
     return 0;     /* not a builtin command */
 }
 
 /* 
  * do_bgfg - Execute the builtin bg and fg commands
  */
-void do_bgfg(char **argv) 
-{
-    // TODO: Implement this function.
+void do_bgfg(char **argv) {
+    struct job_t *job = NULL;
+    char *ch = argv[1];
+    char *c = argv[0];
+    
+    if (!ch) {
+        printf("%s command requires PID or %%jobid argument\n", c);
+        return;
+    }
+
+    if (ch[0]=='%') {
+        int j = atoi(&ch[1]);
+        job = getjobjid(jobs, j);
+        if (!job) {
+          printf("%s: No such job\n", ch);
+          return;
+        }
+    }
+
+    else if (isdigit(ch[0])) {
+        pid_t p = atoi(ch);
+        job = getjobpid(jobs, p);
+        if (!job) {
+          printf("(%d): No such process\n", p);
+          return;
+        }
+    }
+
+    else {
+        printf("%s: argument must be a PID or %%jobid\n", c);
+        return;
+    }
+
+    pid_t id1 = job->pid;
+    int id2 = job->jid;
+    char *id3 = job->cmdline;
+
+    if (strcmp(c, "fg") == 0){
+      job->state = FG;
+      kill(-id1, SIGCONT);
+      waitfg(id1);
+    }
+
+    if (strcmp(c, "bg") == 0){
+      printf("[%d] (%d) %s", id2, id1, id3);
+      job->state = BG;
+      kill(-id1, SIGCONT);  
+    }
+
     return;
 }
 
@@ -251,6 +343,8 @@ void do_bgfg(char **argv)
 void waitfg(pid_t pid)
 {
     // TODO: Implement this function.
+    struct job_t *tmp = getjobpid(jobs, pid);
+    while(tmp->state == FG){ sleep(1); }
     return;
 }
 
@@ -266,6 +360,8 @@ void waitfg(pid_t pid)
 void sigint_handler(int sig) 
 {
     // TODO: Implement this function.
+    if(fgpid(jobs)) 
+        kill(-fgpid(jobs), SIGINT);
     return;
 }
 
@@ -277,6 +373,8 @@ void sigint_handler(int sig)
 void sigtstp_handler(int sig) 
 {
     // TODO: Implement this function.
+    if(fgpid(jobs)) 
+        kill(-fgpid(jobs), SIGTSTP);
     return;
 }
 
